@@ -1,4 +1,5 @@
 #
+# Copyright (C) 2020  Frédéric Pierret <frederic.pierret@qubes-os.org>
 # Copyright (C) 2016  M. Vefa Bicakci <m.v.b@runbox.com>
 # Copyright (C) 2016  Qubes OS Developers
 # Copyright (C) 2013  Red Hat, Inc.
@@ -22,15 +23,11 @@
 
 """Module with the QubesOsSpoke class."""
 
-# import gettext
-# _ = lambda x: gettext.ldgettext("qubes-os-anaconda-plugin", x)
-
 # will never be translated
 _ = lambda x: x
 N_ = lambda x: x
 
 import logging
-
 import gi
 
 gi.require_version('Gtk', '3.0')
@@ -38,76 +35,188 @@ gi.require_version('Gdk', '3.0')
 gi.require_version('GLib', '2.0')
 
 from gi.repository import Gtk
-
 from pyanaconda.ui.categories.system import SystemCategory
 from pyanaconda.ui.gui.spokes import NormalSpoke
 from pyanaconda.ui.common import FirstbootOnlySpokeMixIn
 
+# Useful for devel mode
+try:
+    from qubes.storage.lvm import list_thin_pools
+except ImportError:
+    def list_thin_pools():
+        return []
+
 # export only the spoke, no helper functions, classes or constants
 __all__ = ["QubesOsSpoke"]
 
-class QubesChoice(object):
-    instances = []
+choices_instances = []
 
-    def __init__(self, label, depend=None, extra_check=None,
-                 indent=False):
-        self.widget = Gtk.CheckButton(label=label)
-        self.depend = depend
-        self.extra_check = extra_check
+
+class QubesChoiceBase:
+
+    def __init__(self, widget, location=None, indent=False, choice_type=None):
+        self.widget = widget
+        self.location = location
+        self.indent = indent
+        self.choice_type = choice_type
         self.selected = None
-
         self._can_be_sensitive = True
 
-        if indent:
+        if self.indent:
             self.outer_widget = Gtk.Alignment()
             self.outer_widget.add(self.widget)
             self.outer_widget.set_padding(0, 0, 20, 0)
         else:
             self.outer_widget = self.widget
 
-        if self.depend is not None:
-            self.depend.widget.connect('toggled', self.friend_on_toggled)
-            self.depend.widget.connect('notify::sensitive', self.friend_on_toggled)
-            self.friend_on_toggled(self.depend.widget)
+    def set_selected(self, value):
+        self.widget.set_active(value)
+        if self.selected is not None:
+            self.selected = value
 
-        self.instances.append(self)
-
-    def friend_on_toggled(self, other_widget, param_string=''):
-        self.set_sensitive(other_widget.get_active())
+    def set_sensitive(self, sensitive):
+        if self._can_be_sensitive:
+            self.widget.set_sensitive(sensitive)
 
     def get_selected(self):
         return (self.selected
                 if self.selected is not None
                 else self.widget.get_sensitive() and self.widget.get_active())
 
-    def set_selected(self, value):
-        self.widget.set_active(value)
-        if self.selected is not None:
-            self.selected = value
+    def are_dependencies_selected(self):
+        status = True
+        if self.dependencies:
+            for dependency in self.dependencies:
+                status = status and dependency.widget.get_active()
+
+        return status
+
+
+class QubesChoice(QubesChoiceBase):
+
+    def __init__(self, location, label, dependencies=None, choice_type=None,
+                 indent=False):
+        self.location = location
+        self.widget = Gtk.CheckButton(label=label)
+        self.dependencies = dependencies
+        self.choice_type = choice_type
+        self.selected = None
+        super(QubesChoice, self).__init__(widget=self.widget,
+                                          location=location,
+                                          choice_type=choice_type,
+                                          indent=indent)
+        if self.dependencies:
+            for dependency in self.dependencies:
+                dependency.widget.connect('toggled', self.friend_on_toggled)
+                dependency.widget.connect('notify::sensitive',
+                                          self.friend_on_toggled)
+                self.friend_on_toggled(dependency.widget)
+
+        choices_instances.append(self)
 
     def store_selected(self):
         self.selected = self.get_selected()
 
-    def set_sensitive(self, sensitive):
-        if self._can_be_sensitive:
-            self.widget.set_sensitive(sensitive)
-
-    @classmethod
-    def on_check_advanced_toggled(cls, widget):
-        selected = widget.get_active()
-
-        # this works, because you cannot instantiate the choices in wrong order
-        # (cls.instances is a list and have deterministic ordering)
-        for choice in cls.instances:
-            choice.set_sensitive(not selected and
-                (choice.depend is None or choice.depend.get_selected()))
+    def friend_on_toggled(self, *args):
+        self.set_sensitive(self.are_dependencies_selected())
 
 
 class DisabledChoice(QubesChoice):
-    def __init__(self, label):
-        super(DisabledChoice, self).__init__(label)
+
+    def __init__(self, location, label, indent=False):
+        super(DisabledChoice, self).__init__(location=location,
+                                             label=label,
+                                             indent=indent)
         self.widget.set_sensitive(False)
         self._can_be_sensitive = False
+
+
+class AdvancedChoice(QubesChoiceBase):
+
+    def __init__(self, location, label, indent=False):
+        self.widget = Gtk.CheckButton(label=label)
+        super(AdvancedChoice, self).__init__(widget=self.widget,
+                                             location=location,
+                                             indent=indent)
+        self.widget.connect('toggled', self.disable_configuration)
+
+    @staticmethod
+    def disable_configuration(widget):
+        activated = widget.get_active()
+
+        for choice in choices_instances:
+            if choice.choice_type != 'install':
+                choice.set_sensitive(
+                    not activated and (choice.dependencies is None
+                                       or choice.are_dependencies_selected()))
+
+
+class QubesChoicePool(QubesChoiceBase):
+    def __init__(self, pools, widgets, dependencies=None):
+        self.pools = {}
+        self.widget = widgets['poolGrid']
+        self.vgcombobox = widgets['vgComboBox']
+        self.tpcombobox = widgets['tpComboBox']
+
+        # Merge pools info
+        if pools:
+            for key, val in pools:
+                self.pools[key] = self.pools.get(key, ()) + (val,)
+
+        super(QubesChoicePool, self).__init__(widget=self.widget)
+        self.dependencies = dependencies
+
+        if self.dependencies:
+            for dependency in self.dependencies:
+                dependency.widget.connect('toggled', self.friend_on_toggled)
+                dependency.widget.connect('notify::sensitive',
+                                          self.friend_on_toggled)
+                self.friend_on_toggled(dependency.widget)
+
+        self.vgcombobox.connect("changed", self.on_vgroups_combo_changed)
+
+        self.vgroups = list(self.pools.keys())
+        for vg in self.vgroups:
+            self.vgcombobox.append_text(vg)
+
+        choices_instances.append(self)
+
+    def friend_on_toggled(self, *args):
+        self.set_sensitive(self.are_dependencies_selected())
+
+    def on_vgroups_combo_changed(self, *args):
+        vgroup = self.get_vgroup()
+        self.set_tpools_combo_entries(vgroup)
+
+    def set_tpools_combo_entries(self, vgroup):
+        self.tpcombobox.remove_all()
+        if vgroup in self.pools.keys():
+            for tpool in self.pools[vgroup]:
+                self.tpcombobox.append_text(tpool)
+
+        self.tpcombobox.set_active(0)
+
+    def get_vgroup(self):
+        return self.vgcombobox.get_active_text()
+
+    def get_tpool(self):
+        return self.tpcombobox.get_active_text()
+
+    def set_vgroup(self, vgroup):
+        try:
+            vgroup_index = self.vgroups.index(vgroup)
+        except ValueError:
+            # In case of custom install and default value not available
+            vgroup_index = 0
+        self.vgcombobox.set_active(vgroup_index)
+
+    def set_tpool(self, tpool):
+        vgroup = self.get_vgroup()
+        try:
+            tpool_index = self.pools[vgroup].index(tpool)
+        except (KeyError, ValueError):
+            tpool_index = 0
+        self.tpcombobox.set_active(tpool_index)
 
 
 class QubesOsSpoke(FirstbootOnlySpokeMixIn, NormalSpoke):
@@ -163,68 +272,136 @@ class QubesOsSpoke(FirstbootOnlySpokeMixIn, NormalSpoke):
         NormalSpoke.__init__(self, data, storage, payload)
 
         self.logger = logging.getLogger("anaconda")
-
-        self.main_box = self.builder.get_object("mainBox")
-        self.thread_dialog = None
-
         self.qubes_data = self.data.addons.org_qubes_os_initial_setup
 
-        self.__init_qubes_choices()
+        self.templatesBox = self.builder.get_object("templatesBox")
+        self.mainBox = self.builder.get_object("mainBox")
+        self.advancedBox = self.builder.get_object("advancedBox")
 
-    def __init_qubes_choices(self):
-        self.choice_system = QubesChoice(
-            _('Create default system qubes (sys-net, sys-firewall, default DispVM)'),
+        self.init_qubes_choices()
+
+    def init_qubes_choices(self):
+
+        if self.qubes_data.debian_available:
+            self.choice_install_debian = QubesChoice(
+                location=self.templatesBox,
+                label=_('Debian'),
+                choice_type='install'
+            )
+        else:
+            self.choice_install_debian = DisabledChoice(
+                location=self.templatesBox,
+                label=_("Debian not available"),
             )
 
-        self.choice_default = QubesChoice(
-            _('Create default application qubes '
-                '(personal, work, untrusted, vault)'),
-            depend=self.choice_system)
-
         if self.qubes_data.whonix_available:
-            self.choice_whonix = QubesChoice(
-                _('Create Whonix Gateway and Workstation qubes '
-                    '(sys-whonix, anon-whonix)'),
-                depend=self.choice_system)
+            self.choice_install_whonix = QubesChoice(
+                location=self.templatesBox,
+                label=_('Whonix'),
+                choice_type='install'
+            )
         else:
-            self.choice_whonix = DisabledChoice(_("Whonix not installed"))
+            self.choice_install_whonix = DisabledChoice(
+                location=self.templatesBox,
+                label=_("Whonix not available")
+            )
+            self.choice_whonix = self.choice_install_whonix
+            self.choice_whonix_updates = self.choice_install_whonix
 
-        self.choice_whonix_updates = QubesChoice(
-            _('Enable system and template updates over the Tor anonymity '
-              'network using Whonix'),
-            depend=self.choice_whonix,
-            indent=True)
+        self.choice_system = QubesChoice(
+            location=self.mainBox,
+            label=_('Create default system qubes (sys-net, sys-firewall, default DispVM)')
+        )
+
+        self.choice_default = QubesChoice(
+            location=self.mainBox,
+            label=_('Create default application qubes (personal, work, untrusted, vault)'),
+            dependencies=[self.choice_system]
+        )
 
         if self.qubes_data.usbvm_available:
             self.choice_usb = QubesChoice(
-                _('Use a qube to hold all USB controllers (create a new qube called sys-usb by default)'))
+                location=self.mainBox,
+                label=_('Use a qube to hold all USB controllers (create a new qube called sys-usb by default)')
+            )
         else:
             self.choice_usb = DisabledChoice(
-                _('USB qube configuration disabled - you are using USB '
-                  'keyboard or USB disk'))
+                location=self.mainBox,
+                label=_('USB qube configuration disabled - you are using USB keyboard or USB disk')
+            )
 
         self.choice_usb_with_netvm = QubesChoice(
-            _("Use sys-net qube for both networking and USB devices"),
-            depend=self.choice_usb,
+            location=self.mainBox,
+            label=_("Use sys-net qube for both networking and USB devices"),
+            dependencies=[self.choice_usb],
             indent=True
         )
 
-        self.check_advanced = Gtk.CheckButton(label=_('Do not configure anything (for advanced users)'))
-        self.check_advanced.connect('toggled', QubesChoice.on_check_advanced_toggled)
+        if self.qubes_data.whonix_available:
+            self.choice_whonix = QubesChoice(
+                location=self.mainBox,
+                label=_('Create Whonix Gateway and Workstation qubes (sys-whonix, anon-whonix)'),
+                dependencies=[self.choice_install_whonix, self.choice_system]
+            )
 
-        for choice in QubesChoice.instances:
-            self.main_box.pack_start(choice.outer_widget, False, True, 0)
+            self.choice_whonix_updates = QubesChoice(
+                location=self.mainBox,
+                label=_('Enable system and template updates over the Tor anonymity network using Whonix'),
+                dependencies=[self.choice_install_whonix, self.choice_system, self.choice_whonix],
+                indent=True
+            )
 
-        self.main_box.pack_end(self.check_advanced, False, True, 0)
+        thin_pools = list_thin_pools()
+        if thin_pools:
+            self.choice_custom_pool = QubesChoice(
+                location=self.advancedBox,
+                label=_("Enable custom storage pool"),
+            )
+        else:
+            self.choice_custom_pool = DisabledChoice(
+                location=self.advancedBox,
+                label=_("No thin pool available"),
+            )
 
-        self.check_advanced.set_active(False)
+        self.check_advanced = AdvancedChoice(
+            location=self.advancedBox,
+            label=_("Do not configure anything (for advanced users)"),
+        )
+
+        for choice in choices_instances:
+            choice.location.pack_start(choice.outer_widget, False, True, 0)
+
+        self.choice_pool_list = QubesChoicePool(
+            widgets={
+                'poolGrid': self.builder.get_object("poolGrid"),
+                'vgComboBox': self.builder.get_object("vgComboBox"),
+                'tpComboBox': self.builder.get_object("tpComboBox"),
+            },
+            pools=thin_pools,
+            dependencies=[self.choice_custom_pool]
+        )
+
+        self.advancedBox.reorder_child(self.choice_custom_pool.widget, 1)
+        self.advancedBox.pack_start(self.check_advanced.widget, False, True, 0)
+
+        # Default choices
+        if self.choice_install_debian.widget.get_sensitive():
+            self.choice_install_debian.widget.set_active(True)
+        if self.choice_install_whonix.widget.get_sensitive():
+            self.choice_install_whonix.widget.set_active(True)
 
         self.choice_system.widget.set_active(True)
         self.choice_default.widget.set_active(True)
+
         if self.choice_whonix.widget.get_sensitive():
             self.choice_whonix.widget.set_active(True)
+
         if self.choice_usb.widget.get_sensitive():
             self.choice_usb.widget.set_active(True)
+
+        self.choice_custom_pool.widget.set_active(False)
+        if thin_pools:
+            self.choice_pool_list.widget.set_sensitive(False)
 
     def initialize(self):
         """
@@ -251,10 +428,19 @@ class QubesOsSpoke(FirstbootOnlySpokeMixIn, NormalSpoke):
 
         self.choice_system.set_selected(self.qubes_data.system_vms)
         self.choice_default.set_selected(self.qubes_data.default_vms)
+
         self.choice_whonix.set_selected(self.qubes_data.whonix_vms)
         self.choice_whonix_updates.set_selected(self.qubes_data.whonix_default)
+
         self.choice_usb.set_selected(self.qubes_data.usbvm)
-        self.choice_usb_with_netvm.set_selected(self.qubes_data.usbvm_with_netvm)
+        self.choice_usb_with_netvm.set_selected(
+            self.qubes_data.usbvm_with_netvm)
+
+        self.choice_custom_pool.set_selected(self.qubes_data.custom_pool)
+        if self.qubes_data.vg_tpool:
+            vg, tpool = self.qubes_data.vg_tpool
+            self.choice_pool_list.set_vgroup(vg)
+            self.choice_pool_list.set_tpool(tpool)
 
     def apply(self):
         """
@@ -263,7 +449,20 @@ class QubesOsSpoke(FirstbootOnlySpokeMixIn, NormalSpoke):
 
         """
 
-        self.qubes_data.skip = self.check_advanced.get_active()
+        self.qubes_data.skip = self.check_advanced.get_selected()
+
+        if self.choice_install_whonix.get_selected():
+            self.qubes_data.templates_to_install += ['whonix-gw', 'whonix-ws']
+        else:
+            self.qubes_data.templates_to_install = \
+                [x for x in self.qubes_data.templates_to_install
+                 if x not in ['whonix-gw', 'whonix-ws']]
+
+        if self.choice_install_debian.get_selected():
+            self.qubes_data.templates_to_install.append('debian')
+        else:
+            if 'debian' in self.qubes_data.templates_to_install:
+                self.qubes_data.templates_to_install.remove('debian')
 
         self.qubes_data.system_vms = self.choice_system.get_selected()
         self.qubes_data.default_vms = self.choice_default.get_selected()
@@ -271,6 +470,10 @@ class QubesOsSpoke(FirstbootOnlySpokeMixIn, NormalSpoke):
         self.qubes_data.whonix_default = self.choice_whonix_updates.get_selected()
         self.qubes_data.usbvm = self.choice_usb.get_selected()
         self.qubes_data.usbvm_with_netvm = self.choice_usb_with_netvm.get_selected()
+        self.qubes_data.custom_pool = self.choice_custom_pool.get_selected()
+        if self.choice_pool_list:
+            self.qubes_data.vg_tpool = (self.choice_pool_list.get_vgroup(),
+                                        self.choice_pool_list.get_tpool())
 
         self.qubes_data.seen = True
 
