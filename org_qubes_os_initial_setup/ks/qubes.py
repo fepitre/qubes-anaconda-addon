@@ -103,6 +103,9 @@ class QubesData(AddonData):
         self.usbvm = self.usbvm_available
         self.usbvm_with_netvm = False
 
+        self.custom_pool = False
+        self.vg_tpool = ('qubes_dom0', 'pool01')
+
         self.skip = False
 
         # this is a hack, but initial-setup do not have progress hub or similar
@@ -200,6 +203,7 @@ class QubesData(AddonData):
         os.umask(0o0007)
 
         self.configure_default_kernel()
+        self.configure_default_pool()
 
         # Finish template(s) installation, because it wasn't fully possible
         # from anaconda (it isn't possible to start a VM there).
@@ -267,6 +271,11 @@ class QubesData(AddonData):
         default_kernel = str(sorted(installed_kernels)[-1])
         self.run_command([
             '/usr/bin/qubes-prefs', 'default-kernel', default_kernel])
+
+    def configure_default_pool(self):
+        self.set_stage("Setting up default pool")
+        self.run_command(['/usr/bin/qvm-pool', '--add', 'default', 'lvm_thin',
+                          '-o', 'volume_group=%s,thin_pool=%s,revisions_to_keep=2' % self.vg_tpool])
 
     def configure_dom0(self):
         self.set_stage("Setting up administration VM (dom0)")
