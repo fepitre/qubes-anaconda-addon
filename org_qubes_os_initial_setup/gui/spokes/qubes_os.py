@@ -69,6 +69,15 @@ class QubesBaseChoice:
         else:
             self.outer_widget = self.widget
 
+        if self.depend is not None:
+            if not isinstance(self.depend, list):
+                self.depend = [self.depend]
+            for dependency in self.depend:
+                dependency.widget.connect('toggled', self.friend_on_toggled)
+                dependency.widget.connect('notify::sensitive',
+                                           self.friend_on_toggled)
+                self.friend_on_toggled(dependency.widget)
+
     def append_instance(self):
         self.instances.append(self)
 
@@ -81,10 +90,21 @@ class QubesBaseChoice:
         if self._can_be_sensitive:
             self.widget.set_sensitive(sensitive)
 
+    def friend_on_toggled(self):
+        pass
+
     def get_selected(self):
         return (self.selected
                 if self.selected is not None
                 else self.widget.get_sensitive() and self.widget.get_active())
+
+    def depend_selected(self):
+        status = True
+        if self.depend:
+            for dependency in self.depend:
+                status = status and dependency.widget.get_active()
+
+        return status
 
     @classmethod
     def on_check_advanced_toggled(cls, widget):
@@ -93,8 +113,7 @@ class QubesBaseChoice:
         # this works, because you cannot instantiate the choices in wrong order
         # (cls.instances is a list and have deterministic ordering)
         for choice in cls.instances:
-            choice.set_sensitive(not selected and (
-                        choice.depend is None or choice.depend.get_selected()))
+            choice.set_sensitive(not selected and choice.depend_selected)
 
 
 class QubesChoice(QubesBaseChoice):
@@ -107,12 +126,6 @@ class QubesChoice(QubesBaseChoice):
                                           extra_check=extra_check,
                                           indent=indent)
 
-        if self.depend is not None:
-            self.depend.widget.connect('toggled', self.friend_on_toggled)
-            self.depend.widget.connect('notify::sensitive',
-                                       self.friend_on_toggled)
-            self.friend_on_toggled(self.depend.widget)
-
         self.append_instance()
 
     def get_selected(self):
@@ -123,8 +136,8 @@ class QubesChoice(QubesBaseChoice):
     def store_selected(self):
         self.selected = self.get_selected()
 
-    def friend_on_toggled(self, other_widget, *args):
-        self.set_sensitive(other_widget.get_active())
+    def friend_on_toggled(self, *args):
+        self.set_sensitive(self.depend_selected())
 
 
 class DisabledChoice(QubesChoice):
@@ -172,11 +185,6 @@ class QubesChoicePool(QubesBaseChoice):
                                               depend=depend,
                                               extra_check=extra_check,
                                               indent=indent)
-
-        if self.depend is not None:
-            self.depend.widget.connect('toggled', self.friend_on_toggled)
-            self.depend.widget.connect('notify::sensitive', self.friend_on_toggled)
-            self.friend_on_toggled(self.depend.widget)
 
         self.vgroups = list(self.pools.keys())
         for vg in self.vgroups:
@@ -284,19 +292,24 @@ class QubesOsSpoke(FirstbootOnlySpokeMixIn, NormalSpoke):
 
     def __init_qubes_choices(self):
 
-        self.choice_install_debian = QubesChoice(_('Install Debian template'))
-        self.choice_install_whonix = QubesChoice(_('Install Whonix template'))
+        if self.qubes_data.debian_available:
+            self.choice_install_debian = QubesChoice(_('Install Debian template'))
+        else:
+            self.choice_install_debian = DisabledChoice(_("Debian not available"))
+
+        if self.qubes_data.whonix_available:
+            self.choice_install_whonix = QubesChoice(_('Install Whonix template'))
+        else:
+            self.choice_whonix = DisabledChoice(_("Whonix not available"))
 
         self.choice_system = QubesChoice(_('Create default system qubes (sys-net, sys-firewall, default DispVM)'))
 
         self.choice_default = QubesChoice(_('Create default application qubes (personal, work, untrusted, vault)'), depend=self.choice_system)
 
         if self.qubes_data.whonix_available:
-            self.choice_whonix = QubesChoice(_('Create Whonix Gateway and Workstation qubes (sys-whonix, anon-whonix)'), depend=self.choice_system)
-        else:
-            self.choice_whonix = DisabledChoice(_("Whonix not installed"))
+            self.choice_whonix = QubesChoice(_('Create Whonix Gateway and Workstation qubes (sys-whonix, anon-whonix)'), depend=[self.choice_install_whonix, self.choice_system])
 
-        self.choice_whonix_updates = QubesChoice(_('Enable system and template updates over the Tor anonymity network using Whonix'), depend=self.choice_whonix, indent=True)
+            self.choice_whonix_updates = QubesChoice(_('Enable system and template updates over the Tor anonymity network using Whonix'), depend=[self.choice_install_whonix, self.choice_whonix], indent=True)
 
         if self.qubes_data.usbvm_available:
             self.choice_usb = QubesChoice(_('Use a qube to hold all USB controllers (create a new qube called sys-usb by default)'))
@@ -317,7 +330,8 @@ class QubesOsSpoke(FirstbootOnlySpokeMixIn, NormalSpoke):
         self.main_box.pack_end(self.check_advanced, False, True, 0)
 
         self.check_advanced.set_active(False)
-
+        self.choice_install_debian.widget.set_active(True)
+        self.choice_install_whonix.widget.set_active(True)
         self.choice_system.widget.set_active(True)
         self.choice_default.widget.set_active(True)
         if self.choice_whonix.widget.get_sensitive():
