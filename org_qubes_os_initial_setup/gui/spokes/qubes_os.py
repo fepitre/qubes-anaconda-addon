@@ -41,7 +41,12 @@ from pyanaconda.ui.categories.system import SystemCategory
 from pyanaconda.ui.gui.spokes import NormalSpoke
 from pyanaconda.ui.common import FirstbootOnlySpokeMixIn
 
-from qubes.storage.lvm import list_thin_pools
+# Useful for devel mode
+try:
+    from qubes.storage.lvm import list_thin_pools
+except ImportError:
+    def list_thin_pools():
+        return [('qubes_dom0', 'pool01')]
 
 # export only the spoke, no helper functions, classes or constants
 __all__ = ["QubesOsSpoke"]
@@ -123,8 +128,8 @@ class QubesChoice(QubesBaseChoice):
 
 
 class DisabledChoice(QubesChoice):
-    def __init__(self, label):
-        super(DisabledChoice, self).__init__(label)
+    def __init__(self, label, indent=False):
+        super(DisabledChoice, self).__init__(label, indent)
         self.widget.set_sensitive(False)
         self._can_be_sensitive = False
 
@@ -170,8 +175,7 @@ class QubesChoicePool(QubesBaseChoice):
 
         if self.depend is not None:
             self.depend.widget.connect('toggled', self.friend_on_toggled)
-            self.depend.widget.connect('notify::sensitive',
-                                       self.friend_on_toggled)
+            self.depend.widget.connect('notify::sensitive', self.friend_on_toggled)
             self.friend_on_toggled(self.depend.widget)
 
         self.vgroups = list(self.pools.keys())
@@ -279,50 +283,27 @@ class QubesOsSpoke(FirstbootOnlySpokeMixIn, NormalSpoke):
         self.__init_qubes_choices()
 
     def __init_qubes_choices(self):
-        self.choice_system = QubesChoice(
-            _(
-                'Create default system qubes (sys-net, sys-firewall, default DispVM)'),
-        )
 
-        self.choice_default = QubesChoice(
-            _(
-                'Create default application qubes (personal, work, untrusted, vault)'),
-            depend=self.choice_system)
+        self.choice_system = QubesChoice(_('Create default system qubes (sys-net, sys-firewall, default DispVM)'))
+
+        self.choice_default = QubesChoice(_('Create default application qubes (personal, work, untrusted, vault)'), depend=self.choice_system)
 
         if self.qubes_data.whonix_available:
-            self.choice_whonix = QubesChoice(
-                _(
-                    'Create Whonix Gateway and Workstation qubes (sys-whonix, anon-whonix)'),
-                depend=self.choice_system)
+            self.choice_whonix = QubesChoice(_('Create Whonix Gateway and Workstation qubes (sys-whonix, anon-whonix)'), depend=self.choice_system)
         else:
             self.choice_whonix = DisabledChoice(_("Whonix not installed"))
 
-        self.choice_whonix_updates = QubesChoice(
-            _(
-                'Enable system and template updates over the Tor anonymity network using Whonix'),
-            depend=self.choice_whonix,
-            indent=True)
+        self.choice_whonix_updates = QubesChoice(_('Enable system and template updates over the Tor anonymity network using Whonix'), depend=self.choice_whonix, indent=True)
 
         if self.qubes_data.usbvm_available:
-            self.choice_usb = QubesChoice(
-                _(
-                    'Use a qube to hold all USB controllers (create a new qube called sys-usb by default)'))
+            self.choice_usb = QubesChoice(_('Use a qube to hold all USB controllers (create a new qube called sys-usb by default)'))
         else:
-            self.choice_usb = DisabledChoice(
-                _(
-                    'USB qube configuration disabled - you are using USB keyboard or USB disk'))
+            self.choice_usb = DisabledChoice(_('USB qube configuration disabled - you are using USB keyboard or USB disk'))
 
-        self.choice_usb_with_netvm = QubesChoice(
-            _("Use sys-net qube for both networking and USB devices"),
-            depend=self.choice_usb,
-            indent=True
-        )
+        self.choice_usb_with_netvm = QubesChoice(_("Use sys-net qube for both networking and USB devices"), depend=self.choice_usb, indent=True)
 
-        self.choice_custom_pool = QubesChoice(
-            _("Enable custom storage pool (for advanced users)"))
-        self.choice_pool_list = QubesChoicePool(pools=list_thin_pools(),
-                                                depend=self.choice_custom_pool,
-                                                indent=True)
+        self.choice_custom_pool = QubesChoice(_("Enable custom storage pool (for advanced users)"))
+        self.choice_pool_list = QubesChoicePool(pools=list_thin_pools(), depend=self.choice_custom_pool, indent=True)
 
         self.check_advanced = Gtk.CheckButton(label=_('Do not configure anything (for advanced users)'))
         self.check_advanced.connect('toggled', QubesChoice.on_check_advanced_toggled)

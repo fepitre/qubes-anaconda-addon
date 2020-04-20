@@ -19,7 +19,7 @@
 #
 import grp
 import os
-
+import glob
 import distutils.version
 import pyudev
 import subprocess
@@ -33,6 +33,17 @@ log = get_module_logger(__name__)
 
 __all__ = ['QubesData']
 
+TEMPLATES_RPM_PATH = '/root/qubes_templates/'
+
+def get_template_rpm(template):
+    try:
+        rpm = glob.glob(TEMPLATES_RPM_PATH + 'qubes-template-%s-*.rpm' % template)[0]
+    except IndexError:
+        rpm = None
+    return rpm
+
+def is_template_rpm_available(template):
+    return bool(get_template_rpm(template))
 
 def is_package_installed(pkgname):
     pkglist = subprocess.check_output(['rpm', '-qa', pkgname])
@@ -90,8 +101,9 @@ class QubesData(AddonData):
         super(QubesData, self).__init__(name)
 
         self.whonix_available = (
-                is_package_installed('qubes-template-whonix-gw*') and
-                is_package_installed('qubes-template-whonix-ws*'))
+                is_template_rpm_available('whonix-gw') and
+                is_template_rpm_available('whonix-ws'))
+        self.debian_available = is_template_rpm_available('debian')
         self.usbvm_available = (
                 not usb_keyboard_present() and not started_from_usb())
         self.system_vms = True
@@ -107,6 +119,8 @@ class QubesData(AddonData):
         self.vg_tpool = ('qubes_dom0', 'pool01')
 
         self.skip = False
+
+        self.templates_to_install = ['fedora', 'debian', 'whonix-gw', 'whonix-ws']
 
         # this is a hack, but initial-setup do not have progress hub or similar
         # provision for handling lengthy self.execute() call, so we must do it
@@ -204,6 +218,7 @@ class QubesData(AddonData):
 
         self.configure_default_kernel()
         self.configure_default_pool()
+        self.install_templates()
 
         # Finish template(s) installation, because it wasn't fully possible
         # from anaconda (it isn't possible to start a VM there).
@@ -276,6 +291,12 @@ class QubesData(AddonData):
         self.set_stage("Setting up default pool")
         self.run_command(['/usr/bin/qvm-pool', '--add', 'default', 'lvm_thin',
                           '-o', 'volume_group=%s,thin_pool=%s,revisions_to_keep=2' % self.vg_tpool])
+
+    def install_templates(self):
+        self.set_stage("Installing Qubes templates")
+        for template in self.templates_to_install:
+            rpm = get_template_rpm(template)
+            self.run_command(['/usr/bin/rpm', '-i', '%s' % rpm])
 
     def configure_dom0(self):
         self.set_stage("Setting up administration VM (dom0)")
