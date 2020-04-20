@@ -284,6 +284,9 @@ class QubesOsSpoke(FirstbootOnlySpokeMixIn, NormalSpoke):
 
     def __init_qubes_choices(self):
 
+        self.choice_install_debian = QubesChoice(_('Install Debian template'))
+        self.choice_install_whonix = QubesChoice(_('Install Whonix template'))
+
         self.choice_system = QubesChoice(_('Create default system qubes (sys-net, sys-firewall, default DispVM)'))
 
         self.choice_default = QubesChoice(_('Create default application qubes (personal, work, untrusted, vault)'), depend=self.choice_system)
